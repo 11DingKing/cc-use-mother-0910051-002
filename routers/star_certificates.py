@@ -26,7 +26,8 @@ def check_and_issue_star_certificate(db: Session, volunteer_id: int):
         return None
 
     total_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
-        models.ServiceRecord.volunteer_id == volunteer_id
+        models.ServiceRecord.volunteer_id == volunteer_id,
+        models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
     ).scalar() or 0.0
 
     existing_cert = db.query(models.StarCertificate).filter(

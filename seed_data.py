@@ -1,11 +1,73 @@
 from datetime import date, timedelta
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect, text
 from database import SessionLocal, engine
 import models
 
 
+def _migrate_existing_schema():
+    """对特性上线前已存在的库做幂等的轻量列迁移（SQLite ALTER TABLE ADD COLUMN）。"""
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+
+    def columns(table):
+        return {c["name"] for c in inspector.get_columns(table)} if table in existing_tables else set()
+
+    with engine.begin() as conn:
+        sr_cols = columns("service_records")
+        if "service_records" in existing_tables:
+            additions = {
+                "school_id": "INTEGER REFERENCES schools(id)",
+                "activity_name": "VARCHAR(200)",
+                "time_range": "VARCHAR(30)",
+                "evidence_summary": "TEXT",
+                "evidence_fingerprint": "VARCHAR(64)",
+                "status": "VARCHAR(20)",
+                "parent_record_id": "INTEGER REFERENCES service_records(id)",
+            }
+            for name, ddl in additions.items():
+                if name not in sr_cols:
+                    conn.execute(text(f"ALTER TABLE service_records ADD COLUMN {name} {ddl}"))
+            # 历史记录视为正常状态（SAEnum 原生枚举按枚举名存储）
+            conn.execute(text(
+                "UPDATE service_records SET status = :s WHERE status IS NULL OR status = :v"
+            ), {"s": models.ServiceRecordStatus.ACTIVE.name,
+                "v": models.ServiceRecordStatus.ACTIVE.value})
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_service_records_evidence_fingerprint "
+                "ON service_records (evidence_fingerprint)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_service_records_status "
+                "ON service_records (status)"
+            ))
+
+        pr_cols = columns("points_records")
+        if "points_records" in existing_tables:
+            for name, ddl in {
+                "idempotency_key": "VARCHAR(80)",
+                "control_entry": "BOOLEAN DEFAULT 0",
+                "adjustment_id": "INTEGER REFERENCES points_adjustments(id)",
+            }.items():
+                if name not in pr_cols:
+                    conn.execute(text(f"ALTER TABLE points_records ADD COLUMN {name} {ddl}"))
+            # ADD COLUMN 的 DEFAULT 会同时回填存量行；再补一次保险
+            conn.execute(text(
+                "UPDATE points_records SET control_entry = 0 WHERE control_entry IS NULL"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_points_records_idempotency_key "
+                "ON points_records (idempotency_key)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_points_records_adjustment_id "
+                "ON points_records (adjustment_id)"
+            ))
+
+
 def init_db():
     models.Base.metadata.create_all(bind=engine)
+    _migrate_existing_schema()
     db = SessionLocal()
     try:
         if db.query(models.School).count() == 0:
@@ -24,7 +86,8 @@ def recompute_volunteer_hours(db: Session):
 
     for volunteer in volunteers:
         total = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
-            models.ServiceRecord.volunteer_id == volunteer.id
+            models.ServiceRecord.volunteer_id == volunteer.id,
+            models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
         ).scalar() or 0.0
         volunteer.total_service_hours = total
         new_star = None
@@ -38,6 +101,9 @@ def recompute_volunteer_hours(db: Session):
 
     service_records = db.query(models.ServiceRecord).all()
     for sr in service_records:
+        # 争议中、已驳回、已拆分及拆分产生的子记录均保留台账定值，不重算
+        if sr.status != models.ServiceRecordStatus.ACTIVE or sr.parent_record_id is not None:
+            continue
         base_points = int(sr.service_hours * 10)
         rating_points = 0
         if sr.teacher_rating and sr.teacher_rating >= 4:
@@ -80,6 +146,15 @@ def recompute_volunteer_hours(db: Session):
             models.PointsRecord.points_type == models.PointsType.SPEND
         ).scalar() or 0
         volunteer.points_balance = total_earned - total_spent
+
+        # 重算后时长不再支撑的有效证书予以失活（历史保留可追溯）
+        for cert in db.query(models.StarCertificate).filter(
+            models.StarCertificate.volunteer_id == volunteer.id,
+            models.StarCertificate.is_active == True
+        ).all():
+            level = next((sl for sl in star_levels if sl.id == cert.star_level_id), None)
+            if level is not None and total < level.min_hours:
+                cert.is_active = False
 
         if volunteer.star_level_id:
             existing_cert = db.query(models.StarCertificate).filter(

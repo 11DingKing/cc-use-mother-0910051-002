@@ -72,7 +72,9 @@ def get_parent_view(volunteer_id: int, parent_phone: str = None, db: Session = D
             teacher_name=sr.teacher_name,
             teacher_rating=sr.teacher_rating,
             teacher_comments=sr.teacher_comments,
-            points_awarded=sr.points_awarded or 0
+            points_awarded=sr.points_awarded or 0,
+            status=sr.status,
+            school_name=sr.school.name if sr.school else None,
         ))
 
     enrollments = db.query(models.Enrollment).filter(
@@ -157,7 +159,9 @@ def get_parent_service_records(volunteer_id: int, parent_phone: str = None,
             teacher_name=sr.teacher_name,
             teacher_rating=sr.teacher_rating,
             teacher_comments=sr.teacher_comments,
-            points_awarded=sr.points_awarded or 0
+            points_awarded=sr.points_awarded or 0,
+            status=sr.status,
+            school_name=sr.school.name if sr.school else None,
         ))
 
     return result

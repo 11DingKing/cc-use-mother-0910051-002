@@ -4,6 +4,7 @@ from sqlalchemy import func, and_
 from typing import List
 from database import get_db
 import models, schemas
+from routers.points import effective_points_query
 from datetime import date, datetime
 
 router = APIRouter(prefix="/api/stats", tags=["统计分析"])
@@ -27,7 +28,9 @@ def get_overview_stats(db: Session = Depends(get_db)):
     disabled = db.query(func.count(models.Volunteer.id)).filter(
         models.Volunteer.status == models.VolunteerStatus.DISABLED
     ).scalar() or 0
-    total_hours = db.query(func.sum(models.ServiceRecord.service_hours)).scalar() or 0.0
+    total_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
+        models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
+    ).scalar() or 0.0
 
     today = date.today()
     month_start = date(today.year, today.month, 1)
@@ -35,7 +38,8 @@ def get_overview_stats(db: Session = Depends(get_db)):
         models.Volunteer.registration_date >= month_start
     ).scalar() or 0
     this_month_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
-        models.ServiceRecord.service_date >= month_start
+        models.ServiceRecord.service_date >= month_start,
+        models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
     ).scalar() or 0.0
 
     return schemas.OverviewStats(
@@ -72,7 +76,8 @@ def get_stats_by_school(db: Session = Depends(get_db)):
         total_hours = 0.0
         if volunteer_ids:
             total_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
-                models.ServiceRecord.volunteer_id.in_(volunteer_ids)
+                models.ServiceRecord.volunteer_id.in_(volunteer_ids),
+                models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
             ).scalar() or 0.0
 
         pass_rate = None
@@ -115,7 +120,8 @@ def get_stats_by_star(db: Session = Depends(get_db)):
     no_star_hours = db.query(func.sum(models.ServiceRecord.service_hours)).join(
         models.Volunteer, models.ServiceRecord.volunteer_id == models.Volunteer.id
     ).filter(
-        models.Volunteer.star_level_id.is_(None)
+        models.Volunteer.star_level_id.is_(None),
+        models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
     ).scalar() or 0.0
     result.append(schemas.StarStats(
         star_level_id=None,
@@ -131,7 +137,8 @@ def get_stats_by_star(db: Session = Depends(get_db)):
         hours = db.query(func.sum(models.ServiceRecord.service_hours)).join(
             models.Volunteer, models.ServiceRecord.volunteer_id == models.Volunteer.id
         ).filter(
-            models.Volunteer.star_level_id == sl.id
+            models.Volunteer.star_level_id == sl.id,
+            models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
         ).scalar() or 0.0
         result.append(schemas.StarStats(
             star_level_id=sl.id,
@@ -180,7 +187,8 @@ def get_monthly_stats(year: int = None, months: int = 12, db: Session = Depends(
         service_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
             and_(
                 models.ServiceRecord.service_date >= month_start,
-                models.ServiceRecord.service_date <= month_end
+                models.ServiceRecord.service_date <= month_end,
+                models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
             )
         ).scalar() or 0.0
 
@@ -346,21 +354,20 @@ def get_topic_assessment_stats(db: Session = Depends(get_db)):
 
 @router.get("/points", response_model=schemas.PointsStats)
 def get_points_stats(db: Session = Depends(get_db)):
-    total_earned = db.query(func.sum(models.PointsRecord.points_amount)).filter(
-        models.PointsRecord.points_type == models.PointsType.EARN
-    ).scalar() or 0
+    def agg(ptype):
+        return effective_points_query(db).filter(
+            models.PointsRecord.points_type == ptype
+        ).with_entities(func.sum(models.PointsRecord.points_amount)).scalar() or 0
 
-    total_spent = db.query(func.sum(models.PointsRecord.points_amount)).filter(
-        models.PointsRecord.points_type == models.PointsType.SPEND
-    ).scalar() or 0
+    def cnt(ptype):
+        return effective_points_query(db).filter(
+            models.PointsRecord.points_type == ptype
+        ).with_entities(func.count(models.PointsRecord.id)).scalar() or 0
 
-    earn_count = db.query(func.count(models.PointsRecord.id)).filter(
-        models.PointsRecord.points_type == models.PointsType.EARN
-    ).scalar() or 0
-
-    spend_count = db.query(func.count(models.PointsRecord.id)).filter(
-        models.PointsRecord.points_type == models.PointsType.SPEND
-    ).scalar() or 0
+    total_earned = agg(models.PointsType.EARN)
+    total_spent = agg(models.PointsType.SPEND)
+    earn_count = cnt(models.PointsType.EARN)
+    spend_count = cnt(models.PointsType.SPEND)
 
     return schemas.PointsStats(
         total_points_earned=total_earned,
@@ -386,37 +393,37 @@ def get_monthly_points_stats(year: int = None, months: int = 12, db: Session = D
         last_day = monthrange(year, m)[1]
         month_end = date(year, m, last_day)
 
-        earned = db.query(func.sum(models.PointsRecord.points_amount)).filter(
+        earned = effective_points_query(db).filter(
             and_(
                 models.PointsRecord.created_at >= month_start,
                 models.PointsRecord.created_at <= month_end,
-                models.PointsRecord.points_type == models.PointsType.EARN
+                models.PointsRecord.points_type == models.PointsType.EARN,
             )
-        ).scalar() or 0
+        ).with_entities(func.sum(models.PointsRecord.points_amount)).scalar() or 0
 
-        spent = db.query(func.sum(models.PointsRecord.points_amount)).filter(
+        spent = effective_points_query(db).filter(
             and_(
                 models.PointsRecord.created_at >= month_start,
                 models.PointsRecord.created_at <= month_end,
-                models.PointsRecord.points_type == models.PointsType.SPEND
+                models.PointsRecord.points_type == models.PointsType.SPEND,
             )
-        ).scalar() or 0
+        ).with_entities(func.sum(models.PointsRecord.points_amount)).scalar() or 0
 
-        earn_count = db.query(func.count(models.PointsRecord.id)).filter(
+        earn_count = effective_points_query(db).filter(
             and_(
                 models.PointsRecord.created_at >= month_start,
                 models.PointsRecord.created_at <= month_end,
-                models.PointsRecord.points_type == models.PointsType.EARN
+                models.PointsRecord.points_type == models.PointsType.EARN,
             )
-        ).scalar() or 0
+        ).with_entities(func.count(models.PointsRecord.id)).scalar() or 0
 
-        spend_count = db.query(func.count(models.PointsRecord.id)).filter(
+        spend_count = effective_points_query(db).filter(
             and_(
                 models.PointsRecord.created_at >= month_start,
                 models.PointsRecord.created_at <= month_end,
-                models.PointsRecord.points_type == models.PointsType.SPEND
+                models.PointsRecord.points_type == models.PointsType.SPEND,
             )
-        ).scalar() or 0
+        ).with_entities(func.count(models.PointsRecord.id)).scalar() or 0
 
         result.append({
             "year": year,
@@ -437,19 +444,19 @@ def get_points_by_source(db: Session = Depends(get_db)):
     result = []
 
     for source in sources:
-        total_earned = db.query(func.sum(models.PointsRecord.points_amount)).filter(
+        total_earned = effective_points_query(db).filter(
             models.PointsRecord.source == source,
             models.PointsRecord.points_type == models.PointsType.EARN
-        ).scalar() or 0
+        ).with_entities(func.sum(models.PointsRecord.points_amount)).scalar() or 0
 
-        total_spent = db.query(func.sum(models.PointsRecord.points_amount)).filter(
+        total_spent = effective_points_query(db).filter(
             models.PointsRecord.source == source,
             models.PointsRecord.points_type == models.PointsType.SPEND
-        ).scalar() or 0
+        ).with_entities(func.sum(models.PointsRecord.points_amount)).scalar() or 0
 
-        count = db.query(func.count(models.PointsRecord.id)).filter(
+        count = effective_points_query(db).filter(
             models.PointsRecord.source == source
-        ).scalar() or 0
+        ).with_entities(func.count(models.PointsRecord.id)).scalar() or 0
 
         result.append({
             "source": source.value,

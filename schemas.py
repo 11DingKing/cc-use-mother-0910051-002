@@ -3,7 +3,8 @@ from datetime import date, datetime
 from typing import Optional, List
 from models import (
     VolunteerStatus, AssessmentResult, TimeSlotStatus, TrainingBatchStatus, EnrollmentStatus,
-    PointsType, PointsSource, BenefitType, ExchangeStatus
+    PointsType, PointsSource, BenefitType, ExchangeStatus,
+    ServiceRecordStatus, DisputeStatus, DisputeDecision, EvidenceSubmitterType
 )
 
 
@@ -223,6 +224,10 @@ class ServiceRecordBase(BaseModel):
     teacher_name: Optional[str] = None
     teacher_rating: Optional[int] = None
     teacher_comments: Optional[str] = None
+    school_id: Optional[int] = None
+    activity_name: Optional[str] = None
+    time_range: Optional[str] = None
+    evidence_summary: Optional[str] = None
 
 
 class ServiceRecordCreate(ServiceRecordBase):
@@ -231,10 +236,19 @@ class ServiceRecordCreate(ServiceRecordBase):
 
 class ServiceRecord(ServiceRecordBase):
     id: int
+    points_awarded: int
+    status: ServiceRecordStatus
+    evidence_fingerprint: Optional[str] = None
+    parent_record_id: Optional[int] = None
     created_at: datetime
+    school: Optional[School] = None
 
     class Config:
         from_attributes = True
+
+
+class ServiceRecordDetail(ServiceRecord):
+    child_records: List["ServiceRecord"] = []
 
 
 class SchoolStats(BaseModel):
@@ -754,6 +768,8 @@ class ParentServiceRecord(BaseModel):
     teacher_rating: Optional[int] = None
     teacher_comments: Optional[str] = None
     points_awarded: int
+    status: ServiceRecordStatus = ServiceRecordStatus.ACTIVE
+    school_name: Optional[str] = None
 
 
 class ParentTrainingRecord(BaseModel):
@@ -798,6 +814,127 @@ class BenefitStats(BaseModel):
     total_exchanged: int
     total_quantity: int
     total_points: int
+
+
+# ==================== 跨校服务核验 ====================
+
+class EvidenceCreate(BaseModel):
+    content: str
+    attachment_url: Optional[str] = None
+    submitter_name: Optional[str] = None
+    submitter_school_id: Optional[int] = None
+
+
+class Evidence(BaseModel):
+    id: int
+    dispute_id: int
+    service_record_id: Optional[int] = None
+    submitter_type: EvidenceSubmitterType
+    submitter_school_id: Optional[int] = None
+    submitter_name: Optional[str] = None
+    content: str
+    attachment_url: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DisputeCreate(BaseModel):
+    service_record_ids: List[int] = Field(..., min_length=1)
+    reason: str
+    initiator_school_id: Optional[int] = None
+    created_by: Optional[str] = None
+    evidence: Optional[str] = None
+
+
+class DisputeReviewAction(BaseModel):
+    reviewer: str
+    comment: Optional[str] = None
+
+
+class DisputeDecisionRequest(BaseModel):
+    decision: DisputeDecision
+    reviewer: str
+    comment: Optional[str] = None
+    # 拆分时使用：{服务记录ID: 拆分后保留的时长}；未列出的挂单记录视为无效
+    split_hours: Optional[dict] = None
+
+
+class DisputeCorrectionRequest(BaseModel):
+    """结案后更正：重新作出结论，系统按台账幂等差异调整，不产生重复扣回。"""
+    decision: DisputeDecision
+    reviewer: str
+    comment: Optional[str] = None
+    split_hours: Optional[dict] = None
+
+
+class DisputeLink(BaseModel):
+    id: int
+    service_record_id: int
+    role: str
+    service_record: Optional[ServiceRecord] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ReviewLog(BaseModel):
+    id: int
+    action: str
+    operator: Optional[str] = None
+    comment: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PointsAdjustmentOut(BaseModel):
+    id: int
+    adjustment_key: str
+    service_record_id: Optional[int] = None
+    volunteer_id: int
+    action: str
+    amount: int
+    reason: Optional[str] = None
+    operator: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ServiceDispute(BaseModel):
+    id: int
+    dispute_no: str
+    reason: str
+    status: DisputeStatus
+    initiator_school_id: Optional[int] = None
+    created_by: Optional[str] = None
+    reviewer: Optional[str] = None
+    decision: Optional[DisputeDecision] = None
+    decision_comment: Optional[str] = None
+    decided_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    links: List[DisputeLink] = []
+    evidences: List[Evidence] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ServiceDisputeDetail(ServiceDispute):
+    logs: List[ReviewLog] = []
+    adjustments: List[PointsAdjustmentOut] = []
+
+
+class DuplicateCheckResult(BaseModel):
+    service_record_id: int
+    duplicate_record_ids: List[int]
+    is_duplicate: bool
 
 
 Volunteer.model_rebuild()

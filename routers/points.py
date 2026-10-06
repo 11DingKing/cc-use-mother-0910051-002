@@ -1,11 +1,29 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from typing import List
 from database import get_db
 import models, schemas
 
 router = APIRouter(prefix="/api/points", tags=["积分管理"])
+
+
+def effective_points_query(db: Session):
+    """有效积分流水口径：
+    - 排除争议管控流水（冻结/恢复只纠正余额，不进统计）；
+    - 关联服务记录的流水仅当记录为"正常"时计入（争议中/已驳回/
+      已拆分的原发放随记录状态移出统计，拆分产生的子记录正常计入）。
+    """
+    return db.query(models.PointsRecord).outerjoin(
+        models.ServiceRecord,
+        models.PointsRecord.service_record_id == models.ServiceRecord.id,
+    ).filter(
+        models.PointsRecord.control_entry == False,  # noqa: E712
+        or_(
+            models.PointsRecord.service_record_id.is_(None),
+            models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE,
+        ),
+    )
 
 
 def add_points(db: Session, volunteer_id: int, points: int, source: models.PointsSource,
@@ -35,7 +53,8 @@ def add_points(db: Session, volunteer_id: int, points: int, source: models.Point
 
 
 def spend_points(db: Session, volunteer_id: int, points: int, source: models.PointsSource,
-                description: str = None, exchange_id: int = None):
+                description: str = None, exchange_id: int = None,
+                service_record_id: int = None):
     if points <= 0:
         return None
 
@@ -54,7 +73,8 @@ def spend_points(db: Session, volunteer_id: int, points: int, source: models.Poi
         points_amount=points,
         source=source,
         description=description,
-        exchange_id=exchange_id
+        exchange_id=exchange_id,
+        service_record_id=service_record_id
     )
     db.add(record)
     db.commit()
@@ -82,15 +102,15 @@ def get_volunteer_points(volunteer_id: int, db: Session = Depends(get_db)):
     if not volunteer:
         raise HTTPException(status_code=404, detail="志愿者不存在")
 
-    total_earned = db.query(func.sum(models.PointsRecord.points_amount)).filter(
+    total_earned = effective_points_query(db).filter(
         models.PointsRecord.volunteer_id == volunteer_id,
         models.PointsRecord.points_type == models.PointsType.EARN
-    ).scalar() or 0
+    ).with_entities(func.sum(models.PointsRecord.points_amount)).scalar() or 0
 
-    total_spent = db.query(func.sum(models.PointsRecord.points_amount)).filter(
+    total_spent = effective_points_query(db).filter(
         models.PointsRecord.volunteer_id == volunteer_id,
         models.PointsRecord.points_type == models.PointsType.SPEND
-    ).scalar() or 0
+    ).with_entities(func.sum(models.PointsRecord.points_amount)).scalar() or 0
 
     return schemas.VolunteerPoints(
         volunteer_id=volunteer_id,
@@ -135,21 +155,22 @@ def manual_adjust_points(adjust: schemas.PointsRecordCreate, db: Session = Depen
 
 @router.get("/stats", response_model=schemas.PointsStats)
 def get_points_stats(db: Session = Depends(get_db)):
-    total_earned = db.query(func.sum(models.PointsRecord.points_amount)).filter(
-        models.PointsRecord.points_type == models.PointsType.EARN
-    ).scalar() or 0
+    base = effective_points_query(db)
 
-    total_spent = db.query(func.sum(models.PointsRecord.points_amount)).filter(
-        models.PointsRecord.points_type == models.PointsType.SPEND
-    ).scalar() or 0
+    def agg(ptype):
+        return base.filter(models.PointsRecord.points_type == ptype).with_entities(
+            func.sum(models.PointsRecord.points_amount)
+        ).scalar() or 0
 
-    earn_count = db.query(func.count(models.PointsRecord.id)).filter(
-        models.PointsRecord.points_type == models.PointsType.EARN
-    ).scalar() or 0
+    def cnt(ptype):
+        return base.filter(models.PointsRecord.points_type == ptype).with_entities(
+            func.count(models.PointsRecord.id)
+        ).scalar() or 0
 
-    spend_count = db.query(func.count(models.PointsRecord.id)).filter(
-        models.PointsRecord.points_type == models.PointsType.SPEND
-    ).scalar() or 0
+    total_earned = agg(models.PointsType.EARN)
+    total_spent = agg(models.PointsType.SPEND)
+    earn_count = cnt(models.PointsType.EARN)
+    spend_count = cnt(models.PointsType.SPEND)
 
     return schemas.PointsStats(
         total_points_earned=total_earned,

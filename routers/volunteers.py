@@ -132,6 +132,7 @@ def get_volunteer_service_hours(volunteer_id: int, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="志愿者不存在")
     from sqlalchemy import func
     total = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
-        models.ServiceRecord.volunteer_id == volunteer_id
+        models.ServiceRecord.volunteer_id == volunteer_id,
+        models.ServiceRecord.status == models.ServiceRecordStatus.ACTIVE
     ).scalar() or 0.0
     return {"volunteer_id": volunteer_id, "name": db_volunteer.name, "total_service_hours": total}

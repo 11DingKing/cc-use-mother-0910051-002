@@ -40,6 +40,31 @@ class TimeSlotStatus(str, enum.Enum):
     CANCELLED = "已取消"
 
 
+class ServiceRecordStatus(str, enum.Enum):
+    ACTIVE = "正常"
+    DISPUTED = "争议中"
+    REJECTED = "已驳回"
+    SPLIT = "已拆分"
+
+
+class DisputeStatus(str, enum.Enum):
+    OPEN = "待受理"
+    IN_REVIEW = "复核中"
+    CLOSED = "已结案"
+
+
+class DisputeDecision(str, enum.Enum):
+    CONFIRM = "确认有效"
+    SPLIT = "拆分"
+    REJECT = "驳回"
+
+
+class EvidenceSubmitterType(str, enum.Enum):
+    SYSTEM = "系统"
+    SCHOOL = "学校"
+    REVIEWER = "复核人"
+
+
 class School(Base):
     __tablename__ = "schools"
 
@@ -74,6 +99,8 @@ class PointsSource(str, enum.Enum):
     TEACHER_RATING = "老师好评"
     EXCHANGE_BADGE = "兑换徽章"
     EXCHANGE_PRIORITY_SLOT = "兑换优先时段"
+    DISPUTE_HOLD = "争议冻结"
+    DISPUTE_ADJUST = "争议调整"
     OTHER = "其他"
 
 
@@ -362,10 +389,25 @@ class ServiceRecord(Base):
     teacher_rating = Column(Integer)
     teacher_comments = Column(Text)
     points_awarded = Column(Integer, default=0)
+    # —— 跨校服务核验：上报学校、活动/时段固定信息、证据摘要与指纹 ——
+    school_id = Column(Integer, ForeignKey("schools.id"))
+    activity_name = Column(String(200))
+    time_range = Column(String(30))
+    evidence_summary = Column(Text)
+    evidence_fingerprint = Column(String(64), index=True)
+    status = Column(SAEnum(ServiceRecordStatus), default=ServiceRecordStatus.ACTIVE, index=True)
+    parent_record_id = Column(Integer, ForeignKey("service_records.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
     volunteer = relationship("Volunteer", back_populates="service_records")
     time_slot = relationship("TimeSlot", back_populates="service_record")
+    school = relationship("School")
+    parent_record = relationship("ServiceRecord", remote_side=[id], back_populates="child_records")
+    child_records = relationship("ServiceRecord", back_populates="parent_record")
+    dispute_links = relationship("ServiceDisputeRecord", back_populates="service_record",
+                                 cascade="all, delete-orphan")
+    evidences = relationship("ServiceEvidence", back_populates="service_record",
+                             cascade="all, delete-orphan")
 
 
 class PointsRecord(Base):
@@ -378,12 +420,17 @@ class PointsRecord(Base):
     source = Column(SAEnum(PointsSource), nullable=False)
     service_record_id = Column(Integer, ForeignKey("service_records.id"))
     exchange_id = Column(Integer, ForeignKey("benefit_exchanges.id"))
+    # 争议调整幂等键：同一调整动作只允许产生一条流水；管控流水在统计口径中排除
+    idempotency_key = Column(String(80), unique=True, index=True)
+    control_entry = Column(Boolean, default=False)
+    adjustment_id = Column(Integer, ForeignKey("points_adjustments.id"))
     description = Column(String(200))
     created_at = Column(DateTime, default=datetime.utcnow)
 
     volunteer = relationship("Volunteer", back_populates="points_records")
     service_record = relationship("ServiceRecord")
     exchange = relationship("BenefitExchange", back_populates="points_record")
+    adjustment = relationship("PointsAdjustment", back_populates="points_records")
 
 
 class Benefit(Base):
@@ -437,3 +484,104 @@ class StarCertificate(Base):
 
     volunteer = relationship("Volunteer", back_populates="star_certificates")
     star_level = relationship("StarLevel")
+
+
+# ==================== 跨校服务核验 ====================
+
+class ServiceDispute(Base):
+    """跨校服务争议单：疑似重复或被申诉的服务记录挂入同一争议单，冻结后由复核人裁决。"""
+    __tablename__ = "service_disputes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_no = Column(String(40), unique=True, nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    status = Column(SAEnum(DisputeStatus), default=DisputeStatus.OPEN, index=True)
+    initiator_school_id = Column(Integer, ForeignKey("schools.id"))
+    created_by = Column(String(50))
+    reviewer = Column(String(50))
+    decision = Column(SAEnum(DisputeDecision))
+    decision_comment = Column(Text)
+    correction_round = Column(Integer, default=0)
+    decided_at = Column(DateTime)
+    closed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    initiator_school = relationship("School")
+    links = relationship("ServiceDisputeRecord", back_populates="dispute",
+                         cascade="all, delete-orphan")
+    evidences = relationship("ServiceEvidence", back_populates="dispute",
+                             cascade="all, delete-orphan")
+    logs = relationship("DisputeReviewLog", back_populates="dispute",
+                        cascade="all, delete-orphan", order_by="DisputeReviewLog.created_at")
+    adjustments = relationship("PointsAdjustment", back_populates="dispute",
+                               cascade="all, delete-orphan")
+
+
+class ServiceDisputeRecord(Base):
+    """争议单与服务记录的关联；同一争议单可挂多条（双方各报一条）。"""
+    __tablename__ = "service_dispute_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_id = Column(Integer, ForeignKey("service_disputes.id"), nullable=False)
+    service_record_id = Column(Integer, ForeignKey("service_records.id"), nullable=False)
+    role = Column(String(20), default="primary")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    dispute = relationship("ServiceDispute", back_populates="links")
+    service_record = relationship("ServiceRecord", back_populates="dispute_links")
+
+
+class ServiceEvidence(Base):
+    """双方补交的证据；接收记录时系统固定的证据摘要以 SYSTEM 类型固化。"""
+    __tablename__ = "service_evidences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_id = Column(Integer, ForeignKey("service_disputes.id"), nullable=False)
+    service_record_id = Column(Integer, ForeignKey("service_records.id"))
+    submitter_type = Column(SAEnum(EvidenceSubmitterType), default=EvidenceSubmitterType.SCHOOL)
+    submitter_school_id = Column(Integer, ForeignKey("schools.id"))
+    submitter_name = Column(String(50))
+    content = Column(Text, nullable=False)
+    attachment_url = Column(String(500))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    dispute = relationship("ServiceDispute", back_populates="evidences")
+    service_record = relationship("ServiceRecord", back_populates="evidences")
+    submitter_school = relationship("School")
+
+
+class DisputeReviewLog(Base):
+    """争议处置全过程留痕：受理、补证、裁决、结案后更正。"""
+    __tablename__ = "dispute_review_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_id = Column(Integer, ForeignKey("service_disputes.id"), nullable=False)
+    action = Column(String(30), nullable=False)
+    operator = Column(String(50))
+    comment = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    dispute = relationship("ServiceDispute", back_populates="logs")
+
+
+class PointsAdjustment(Base):
+    """积分调整台账：冻结、解冻、驳回扣回、拆分重发、结案后更正全部登记于此，
+    通过幂等键保证同一结论不会重复扣回或重复恢复。"""
+    __tablename__ = "points_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    adjustment_key = Column(String(120), unique=True, nullable=False, index=True)
+    dispute_id = Column(Integer, ForeignKey("service_disputes.id"))
+    service_record_id = Column(Integer, ForeignKey("service_records.id"))
+    volunteer_id = Column(Integer, ForeignKey("volunteers.id"), nullable=False)
+    action = Column(String(30), nullable=False)
+    amount = Column(Integer, nullable=False, default=0)
+    reason = Column(Text)
+    operator = Column(String(50))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    dispute = relationship("ServiceDispute", back_populates="adjustments")
+    service_record = relationship("ServiceRecord")
+    volunteer = relationship("Volunteer")
+    points_records = relationship("PointsRecord", back_populates="adjustment")
