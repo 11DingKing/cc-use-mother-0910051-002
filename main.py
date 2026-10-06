@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
 from seed_data import init_db
-from routers import volunteers, trainings, assessments, time_slots, service_records, base_data, stats, points, benefits, star_certificates, parents
+from routers import volunteers, trainings, assessments, time_slots, service_records, base_data, stats, points, benefits, star_certificates, parents, disputes
 
 Base.metadata.create_all(bind=engine)
 init_db()
@@ -26,6 +26,8 @@ app.include_router(trainings.router)
 app.include_router(assessments.router)
 app.include_router(time_slots.router)
 app.include_router(service_records.router)
+app.include_router(disputes.router)
+app.include_router(disputes.records_router)
 app.include_router(base_data.router)
 app.include_router(stats.router)
 app.include_router(points.router)
@@ -54,7 +56,8 @@ def root():
             "培训管理 - 期次/课次/报名入班/课次出勤 (/api/trainings/batches, /sessions, /enrollments)",
             "考核管理 - 主题/评分项/题库/按项打分/补考/资格证 (/api/assessments/topics, /criteria, /questions, /submit-scores, /retake, /certifications)",
             "讲解时段 (/api/time-slots)",
-            "服务记录 - 自动计算积分与星级评定 (/api/service-records)",
+            "服务记录 - 自动计算积分与星级评定，接收时固定证据摘要 (/api/service-records)",
+            "服务核验 - 跨校重复检测、争议冻结、证据补交、复核结案与可追溯调整 (/api/disputes)",
             "积分管理 - 积分记录、余额查询、积分统计 (/api/points)",
             "权益管理 - 权益商品、兑换记录、兑换统计 (/api/benefits)",
             "星级证书 - 自动发放、证书查询 (/api/star-certificates)",

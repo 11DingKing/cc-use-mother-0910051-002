@@ -27,7 +27,9 @@ def get_overview_stats(db: Session = Depends(get_db)):
     disabled = db.query(func.count(models.Volunteer.id)).filter(
         models.Volunteer.status == models.VolunteerStatus.DISABLED
     ).scalar() or 0
-    total_hours = db.query(func.sum(models.ServiceRecord.service_hours)).scalar() or 0.0
+    total_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
+        models.ServiceRecord.verification_status == models.ServiceRecordStatus.ACTIVE
+    ).scalar() or 0.0
 
     today = date.today()
     month_start = date(today.year, today.month, 1)
@@ -35,7 +37,8 @@ def get_overview_stats(db: Session = Depends(get_db)):
         models.Volunteer.registration_date >= month_start
     ).scalar() or 0
     this_month_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
-        models.ServiceRecord.service_date >= month_start
+        models.ServiceRecord.service_date >= month_start,
+        models.ServiceRecord.verification_status == models.ServiceRecordStatus.ACTIVE
     ).scalar() or 0.0
 
     return schemas.OverviewStats(
@@ -72,7 +75,8 @@ def get_stats_by_school(db: Session = Depends(get_db)):
         total_hours = 0.0
         if volunteer_ids:
             total_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
-                models.ServiceRecord.volunteer_id.in_(volunteer_ids)
+                models.ServiceRecord.volunteer_id.in_(volunteer_ids),
+                models.ServiceRecord.verification_status == models.ServiceRecordStatus.ACTIVE
             ).scalar() or 0.0
 
         pass_rate = None
@@ -115,7 +119,8 @@ def get_stats_by_star(db: Session = Depends(get_db)):
     no_star_hours = db.query(func.sum(models.ServiceRecord.service_hours)).join(
         models.Volunteer, models.ServiceRecord.volunteer_id == models.Volunteer.id
     ).filter(
-        models.Volunteer.star_level_id.is_(None)
+        models.Volunteer.star_level_id.is_(None),
+        models.ServiceRecord.verification_status == models.ServiceRecordStatus.ACTIVE
     ).scalar() or 0.0
     result.append(schemas.StarStats(
         star_level_id=None,
@@ -131,7 +136,8 @@ def get_stats_by_star(db: Session = Depends(get_db)):
         hours = db.query(func.sum(models.ServiceRecord.service_hours)).join(
             models.Volunteer, models.ServiceRecord.volunteer_id == models.Volunteer.id
         ).filter(
-            models.Volunteer.star_level_id == sl.id
+            models.Volunteer.star_level_id == sl.id,
+            models.ServiceRecord.verification_status == models.ServiceRecordStatus.ACTIVE
         ).scalar() or 0.0
         result.append(schemas.StarStats(
             star_level_id=sl.id,
@@ -180,7 +186,8 @@ def get_monthly_stats(year: int = None, months: int = 12, db: Session = Depends(
         service_hours = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
             and_(
                 models.ServiceRecord.service_date >= month_start,
-                models.ServiceRecord.service_date <= month_end
+                models.ServiceRecord.service_date <= month_end,
+                models.ServiceRecord.verification_status == models.ServiceRecordStatus.ACTIVE
             )
         ).scalar() or 0.0
 

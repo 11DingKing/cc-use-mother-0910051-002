@@ -35,7 +35,7 @@ def add_points(db: Session, volunteer_id: int, points: int, source: models.Point
 
 
 def spend_points(db: Session, volunteer_id: int, points: int, source: models.PointsSource,
-                description: str = None, exchange_id: int = None):
+                description: str = None, exchange_id: int = None, service_record_id: int = None):
     if points <= 0:
         return None
 
@@ -54,7 +54,38 @@ def spend_points(db: Session, volunteer_id: int, points: int, source: models.Poi
         points_amount=points,
         source=source,
         description=description,
-        exchange_id=exchange_id
+        exchange_id=exchange_id,
+        service_record_id=service_record_id
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def adjust_points(db: Session, volunteer_id: int, points: int, source: models.PointsSource,
+                  description: str = None, service_record_id: int = None):
+    """争议核验专用强制调整：正数记获得、负数记消耗。
+
+    与 spend_points 不同，不校验余额（冻结扣回是强制措施，允许余额暂时为负），
+    每次调整都写入积分流水，保证争议处理全程可追溯。
+    """
+    if points == 0:
+        return None
+
+    volunteer = db.query(models.Volunteer).filter(models.Volunteer.id == volunteer_id).first()
+    if not volunteer:
+        return None
+
+    volunteer.points_balance = (volunteer.points_balance or 0) + points
+
+    record = models.PointsRecord(
+        volunteer_id=volunteer_id,
+        points_type=models.PointsType.EARN if points > 0 else models.PointsType.SPEND,
+        points_amount=abs(points),
+        source=source,
+        description=description,
+        service_record_id=service_record_id
     )
     db.add(record)
     db.commit()

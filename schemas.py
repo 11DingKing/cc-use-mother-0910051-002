@@ -3,7 +3,8 @@ from datetime import date, datetime
 from typing import Optional, List
 from models import (
     VolunteerStatus, AssessmentResult, TimeSlotStatus, TrainingBatchStatus, EnrollmentStatus,
-    PointsType, PointsSource, BenefitType, ExchangeStatus
+    PointsType, PointsSource, BenefitType, ExchangeStatus,
+    ServiceRecordStatus, DisputeStatus, DisputeDecision, AdjustmentType
 )
 
 
@@ -223,6 +224,9 @@ class ServiceRecordBase(BaseModel):
     teacher_name: Optional[str] = None
     teacher_rating: Optional[int] = None
     teacher_comments: Optional[str] = None
+    activity_name: Optional[str] = None
+    reporting_school_id: Optional[int] = None
+    evidence_summary: Optional[str] = None
 
 
 class ServiceRecordCreate(ServiceRecordBase):
@@ -231,10 +235,91 @@ class ServiceRecordCreate(ServiceRecordBase):
 
 class ServiceRecord(ServiceRecordBase):
     id: int
+    points_awarded: int = 0
+    evidence_digest: Optional[str] = None
+    verification_status: ServiceRecordStatus = ServiceRecordStatus.ACTIVE
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class DisputeCreate(BaseModel):
+    reason: str
+    raised_by: Optional[str] = None
+    raised_school_id: Optional[int] = None
+    is_duplicate_suspected: bool = False
+
+
+class DisputeEvidenceCreate(BaseModel):
+    school_id: Optional[int] = None
+    submitted_by: Optional[str] = None
+    content: str
+
+
+class DisputeEvidence(DisputeEvidenceCreate):
+    id: int
+    dispute_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DisputeResolve(BaseModel):
+    decision: DisputeDecision
+    reviewer_name: str
+    reviewer_role: str
+    adjusted_hours: Optional[float] = None
+    resolution_notes: Optional[str] = None
+
+
+class ServiceAdjustment(BaseModel):
+    id: int
+    dispute_id: Optional[int] = None
+    service_record_id: int
+    volunteer_id: int
+    adjustment_type: AdjustmentType
+    points_delta: int
+    hours_delta: float
+    points_balance_after: Optional[int] = None
+    total_hours_after: Optional[float] = None
+    star_level_id_after: Optional[int] = None
+    actor: Optional[str] = None
+    note: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ServiceDispute(BaseModel):
+    id: int
+    dispute_no: str
+    service_record_id: int
+    volunteer_id: int
+    status: DisputeStatus
+    reason: Optional[str] = None
+    raised_by: Optional[str] = None
+    raised_school_id: Optional[int] = None
+    is_duplicate_suspected: bool
+    freeze_points: int
+    freeze_hours: float
+    decision: Optional[DisputeDecision] = None
+    adjusted_hours: Optional[float] = None
+    resolution_notes: Optional[str] = None
+    reviewer_name: Optional[str] = None
+    reviewer_role: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ServiceDisputeDetail(ServiceDispute):
+    evidences: List[DisputeEvidence] = []
+    adjustments: List[ServiceAdjustment] = []
 
 
 class SchoolStats(BaseModel):

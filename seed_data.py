@@ -24,7 +24,8 @@ def recompute_volunteer_hours(db: Session):
 
     for volunteer in volunteers:
         total = db.query(func.sum(models.ServiceRecord.service_hours)).filter(
-            models.ServiceRecord.volunteer_id == volunteer.id
+            models.ServiceRecord.volunteer_id == volunteer.id,
+            models.ServiceRecord.verification_status == models.ServiceRecordStatus.ACTIVE
         ).scalar() or 0.0
         volunteer.total_service_hours = total
         new_star = None

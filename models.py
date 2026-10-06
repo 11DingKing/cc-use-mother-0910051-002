@@ -74,7 +74,34 @@ class PointsSource(str, enum.Enum):
     TEACHER_RATING = "老师好评"
     EXCHANGE_BADGE = "兑换徽章"
     EXCHANGE_PRIORITY_SLOT = "兑换优先时段"
+    DISPUTE_FREEZE = "争议冻结"
+    DISPUTE_RESTORE = "争议解冻"
     OTHER = "其他"
+
+
+class ServiceRecordStatus(str, enum.Enum):
+    ACTIVE = "有效"
+    DISPUTED = "争议中"
+    REJECTED = "已驳回"
+
+
+class DisputeStatus(str, enum.Enum):
+    OPEN = "待复核"
+    RESOLVED = "已结案"
+
+
+class DisputeDecision(str, enum.Enum):
+    CONFIRM = "确认有效"
+    SPLIT = "拆分确认"
+    REJECT = "驳回记录"
+
+
+class AdjustmentType(str, enum.Enum):
+    FREEZE = "争议冻结"
+    RESTORE = "解冻恢复"
+    GRANT = "确认发放"
+    SPLIT = "拆分调整"
+    REVOKE = "驳回扣回"
 
 
 class BenefitType(str, enum.Enum):
@@ -362,10 +389,82 @@ class ServiceRecord(Base):
     teacher_rating = Column(Integer)
     teacher_comments = Column(Text)
     points_awarded = Column(Integer, default=0)
+    activity_name = Column(String(100))
+    reporting_school_id = Column(Integer, ForeignKey("schools.id"))
+    evidence_summary = Column(Text)
+    evidence_digest = Column(String(64))
+    verification_status = Column(SAEnum(ServiceRecordStatus), default=ServiceRecordStatus.ACTIVE)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     volunteer = relationship("Volunteer", back_populates="service_records")
     time_slot = relationship("TimeSlot", back_populates="service_record")
+    reporting_school = relationship("School")
+    disputes = relationship("ServiceDispute", back_populates="service_record")
+
+
+class ServiceDispute(Base):
+    __tablename__ = "service_disputes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_no = Column(String(50), unique=True, nullable=False)
+    service_record_id = Column(Integer, ForeignKey("service_records.id"), nullable=False)
+    volunteer_id = Column(Integer, ForeignKey("volunteers.id"), nullable=False)
+    status = Column(SAEnum(DisputeStatus), default=DisputeStatus.OPEN)
+    reason = Column(Text)
+    raised_by = Column(String(100))
+    raised_school_id = Column(Integer, ForeignKey("schools.id"))
+    is_duplicate_suspected = Column(Boolean, default=False)
+    freeze_points = Column(Integer, default=0)
+    freeze_hours = Column(Float, default=0.0)
+    decision = Column(SAEnum(DisputeDecision))
+    adjusted_hours = Column(Float)
+    resolution_notes = Column(Text)
+    reviewer_name = Column(String(50))
+    reviewer_role = Column(String(50))
+    resolved_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    service_record = relationship("ServiceRecord", back_populates="disputes")
+    volunteer = relationship("Volunteer")
+    raised_school = relationship("School")
+    evidences = relationship("DisputeEvidence", back_populates="dispute", cascade="all, delete-orphan")
+    adjustments = relationship("ServiceAdjustment", back_populates="dispute")
+
+
+class DisputeEvidence(Base):
+    __tablename__ = "dispute_evidences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_id = Column(Integer, ForeignKey("service_disputes.id"), nullable=False)
+    school_id = Column(Integer, ForeignKey("schools.id"))
+    submitted_by = Column(String(100))
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    dispute = relationship("ServiceDispute", back_populates="evidences")
+    school = relationship("School")
+
+
+class ServiceAdjustment(Base):
+    __tablename__ = "service_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_id = Column(Integer, ForeignKey("service_disputes.id"))
+    service_record_id = Column(Integer, ForeignKey("service_records.id"), nullable=False)
+    volunteer_id = Column(Integer, ForeignKey("volunteers.id"), nullable=False)
+    adjustment_type = Column(SAEnum(AdjustmentType), nullable=False)
+    points_delta = Column(Integer, default=0)
+    hours_delta = Column(Float, default=0.0)
+    points_balance_after = Column(Integer)
+    total_hours_after = Column(Float)
+    star_level_id_after = Column(Integer)
+    actor = Column(String(100))
+    note = Column(String(500))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    dispute = relationship("ServiceDispute", back_populates="adjustments")
+    service_record = relationship("ServiceRecord")
+    volunteer = relationship("Volunteer")
 
 
 class PointsRecord(Base):
